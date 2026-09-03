@@ -330,13 +330,13 @@ def main() -> None:
   parser.add_argument(
       "--model_name",
       type=str,
-      default="google/gemma-4-E4B-it",
+      default="",
       help="Target model ID on Hugging Face",
   )
   parser.add_argument(
       "--assistant_model_name",
       type=str,
-      default="google/gemma-4-E4B-it-assistant",
+      default="",
       help="Assistant (Drafter) model ID on Hugging Face",
   )
   parser.add_argument(
