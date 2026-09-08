@@ -2,7 +2,7 @@
 
 This guide details the methodology, code design, and execution instructions for
 the Gemma 4 Multi-Token Prediction (MTP) drafter experiments on instruction and
-chat datasets (e.g., `PaDaS-Lab/Instruct-to-SPARQL`, `GSM8K`, `MBPP`).
+chat datasets (e.g., `PaDaS-Lab/Instruct-to-SPARQL`, `GSM8K`, `SciQA`) as outlined in the `Efficient and Robust Drafting with Multi-Token Prediction` paper.
 
 ## Experiment Goals
 
@@ -17,107 +17,6 @@ chat datasets (e.g., `PaDaS-Lab/Instruct-to-SPARQL`, `GSM8K`, `MBPP`).
 4.  **MTP Only (Distill Only)**: Freeze the fine-tuned target model (from
     Step 2) and train *only* the assistant model using Probability Distillation
     to align it with the custom vocabulary space.
-
---------------------------------------------------------------------------------
-
-## Technical Design & Methodology
-
-### 1. Speculative Decoding Metric Logging & Metrics
-
-To evaluate speculative decoding performance, we hook into Hugging Face
-`transformers` generation engine (`AssistedCandidateGenerator` and
-`Gemma4CandidateGenerator`). The script dynamically patches the
-`update_candidate_strategy` method of both classes to capture:
-
--   **`num_matches`**: The number of draft tokens validated and accepted by the
-    target model in a step.
--   **`candidate_length`**: The number of draft tokens proposed by the assistant
-    in that step.
-
-Using these logs, we compute two key speculative metrics:
-
-1.  **Acceptance Rate**: The fraction of proposed draft tokens accepted by the
-    target model: <!-- disableFinding(LINE_OVER_80) --> $$\text{Acceptance
-    Rate} = \frac{\sum \text{Accepted Tokens}}{\sum \text{Proposed Tokens}}$$
-
-2.  **Block Efficiency (Tokens / Step)**: The average total generated tokens
-    produced per speculative decoding step (the base token plus average accepted
-    draft tokens): <!-- disableFinding(LINE_OVER_80) --> $$\text{Block
-    Efficiency} = 1 + \frac{\sum \text{Accepted Tokens}}{\text{Total Speculative
-    Steps}}$$
-
-### 2. MTP Joint Loss (Target + Drafter)
-
-During joint training (mode `both`) or MTP-only training (mode `mtp_only`), we
-wrap the model with `Gemma4TrainingModel` and train with a combined loss
-function:
-
-<!-- disableFinding(LINE_OVER_80) -->
-
-$$Loss_{\text{joint}} = Loss_{\text{backbone\_LM}} + \lambda_{\text{MTP}} \sum_{k=1}^{K} Loss_{\text{head\_}k}$$
-
-For each speculative head $k$, the head loss is a weighted sum of causal
-language modeling (LM) loss and Probability Distillation Total Variation
-Distance (TVD) loss:
-
-<!-- disableFinding(LINE_OVER_80) -->
-
-$$Loss_{\text{head\_}k} = (1 - w_{\text{distill}}) Loss_{\text{LM\_}k} + w_{\text{distill}} Loss_{\text{TVD\_}k}$$
-
-*   **TVD Loss**: Measures the difference in probability distributions output by
-    the speculative head and the corresponding future step logits from the
-    detached backbone (acting as a teacher).
-    <!-- disableFinding(LINE_OVER_80) -->
-    $$Loss_{\text{TVD\_}k} = \frac{1}{2} \sum_{v \in V} | P_{\text{head\_}k}(v) - P_{\text{backbone\_}k}(v) |$$
-
-#### Hyperparameters:
-
-*   $\lambda_{\text{MTP}}$ (`--mtp_loss_weight`): Controls the overall weight of
-    the MTP loss component.
-*   $w_{\text{distill}}$ (`--mtp_distillation_weight`): Controls the balance
-    between LM loss (NTP) and Distillation (TVD) within the MTP loss. Setting
-    this to `1.0` turns on **Distillation Only** mode.
-
-### 3. Parameter Allocation & Freezing
-
--   **Target Model (`target_only` mode)**: Tuned using PEFT LoRA adapters
-    targeting `q_proj`, `v_proj`, `k_proj`, `o_proj`.
--   **Joint Tuning (`both` mode)**: PEFT LoRA adapters are injected into
-    `q_proj`, `k_proj`, `v_proj`, `o_proj` layers across the target backbone,
-    and expanded targets (`q_proj`, `o_proj`, `gate_proj`, `up_proj`,
-    `down_proj`, `pre_projection`, `post_projection`, `lm_head`) for the
-    assistant. Both models train simultaneously.
--   **MTP Only (`mtp_only` mode)**: Loads the fine-tuned Target LoRA (from Step
-    2). The Target Backbone is **frozen** (`requires_grad=False`) and set to
-    `eval()` mode to ensure deterministic teacher outputs (no dropout noise).
-    Only the Assistant Model's LoRAs are trained.
-
-| Mode          | Target Backbone | Target LoRA   | Assistant     | MTP Loss |
-:               :                 :               : LoRA          :          :
-| :------------ | :-------------: | :-----------: | :-----------: | :------: |
-| `target_only` | Frozen          | **Trainable** | *Not Loaded*  | No       |
-| `both`        | Frozen          | **Trainable** | **Trainable** | Yes      |
-| `mtp_only`    | **Frozen (Eval  | *Frozen (from | **Trainable** | Yes      |
-:               : Mode)**         : Step 2)*      :               :          :
-
---------------------------------------------------------------------------------
-
-## Code Structure
-
-All necessary scripts are located in this directory:
-
--   **[training_gemma4.py](training_gemma4.py)**: Standalone modules containing
-    `Gemma4LossFunction`, `Gemma4TrainingModel`, and `Gemma4LoRATrainer`.
--   **[eval_utils.py](eval_utils.py)**: Evaluation utilities
-    (`compute_ntp_accuracy`, `compute_block_efficiency`), model unwrapping, and
-    candidate generator monkeypatches.
--   **[data_utils.py](data_utils.py)**: Data loading and chat formatting
-    utilities for instruction and chat datasets (e.g., `SPARQL`, `GSM8K`,
-    `MBPP`).
--   **[run_experiments.py](run_experiments.py)**: Main entry point orchestrating
-    training and evaluation.
--   **[run_pipeline.sh](run_pipeline.sh)**: Shell automation script to run all
-    training and evaluation experiments sequentially (divided into 7 steps).
 
 --------------------------------------------------------------------------------
 
